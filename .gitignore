@@ -3,3 +3,8 @@
 
 # Environment specific configuration
 .env
+
+# Log files
+trading_signals.csv
+*.csv
+logs/

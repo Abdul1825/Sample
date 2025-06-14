@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'trading_bot.apps.TradingBotConfig', # Added trading_bot app
 ]
 
 MIDDLEWARE = [
@@ -129,3 +130,9 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', None)
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', None)
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', None)
 PRINT_WS_MESSAGES = os.environ.get('PRINT_WS_MESSAGES', 'False').lower() == 'true'
+
+# --- OpenRouter AI Settings ---
+OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', None)
+# You can choose a default free model from OpenRouter, e.g.:
+# 'mistralai/mistral-7b-instruct:free', 'nousresearch/nous-capybara-7b:free', 'gryphe/mythomist-7b:free'
+OPENROUTER_MODEL_NAME = os.environ.get('OPENROUTER_MODEL_NAME', 'mistralai/mistral-7b-instruct:free')

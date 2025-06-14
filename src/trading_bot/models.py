@@ -1,18 +1,38 @@
 from django.db import models
+from decimal import Decimal # Ensure Decimal is available
 
 class Signal(models.Model):
-    symbol = models.CharField(max_length=10)  # e.g., BTCUSDT
-    timestamp = models.DateTimeField(auto_now_add=True)
-    signal_type = models.CharField(max_length=4)  # e.g., BUY, SELL
+    symbol = models.CharField(max_length=20)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    signal_type = models.CharField(max_length=10, db_index=True)
     price = models.DecimalField(max_digits=20, decimal_places=8)
-    # Add other relevant fields like stop_loss, take_profit, etc. later
+
+    ai_model = models.CharField(max_length=100, null=True, blank=True)
+    ai_confidence_score = models.FloatField(null=True, blank=True)
+    ai_reason = models.TextField(null=True, blank=True)
+    suggested_stop_loss = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    suggested_take_profit = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+
+    sma_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    rsi_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    macd_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    macd_signal_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    macd_histogram_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+
+    bollinger_upper = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    bollinger_middle = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    bollinger_lower = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.timestamp} - {self.symbol} - {self.signal_type} @ {self.price}"
+        return f"{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - {self.symbol} - {self.signal_type} @ {self.price:.4f} (AI: {self.ai_model or 'N/A'})"
 
-class Trade(models.Model):
+    class Meta:
+        ordering = ['-timestamp']
+
+class Trade(models.Model): # Assuming this was the structure of Trade model from plan 1
     signal = models.ForeignKey(Signal, on_delete=models.CASCADE, related_name='trades', null=True, blank=True)
-    symbol = models.CharField(max_length=10) # Should ideally match the signal's symbol
+    symbol = models.CharField(max_length=20) # Match Signal's symbol length
     timestamp = models.DateTimeField(auto_now_add=True)
     trade_type = models.CharField(max_length=4) # e.g., BUY, SELL
     price = models.DecimalField(max_digits=20, decimal_places=8)
@@ -20,4 +40,7 @@ class Trade(models.Model):
     # Add other relevant fields like status (OPEN, CLOSED), profit/loss, etc. later
 
     def __str__(self):
-        return f"{self.timestamp} - {self.trade_type} {self.quantity} {self.symbol} @ {self.price}"
+        return f"{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - {self.trade_type} {self.quantity} {self.symbol} @ {self.price:.4f}"
+
+    class Meta:
+        ordering = ['-timestamp']

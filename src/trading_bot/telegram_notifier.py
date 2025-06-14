@@ -1,6 +1,7 @@
 import telegram
 import os
 import asyncio
+from decimal import Decimal, InvalidOperation
 
 # Attempt to load Django settings
 django_settings_loaded = False
@@ -55,41 +56,102 @@ def escape_markdown_v2(text_to_escape):
     # Escape each character with a preceding backslash
     return "".join([f'\\{char}' if char in escape_chars else char for char in text_to_escape])
 
-def format_signal_to_message(signal_data):
+def format_signal_to_message(signal_data): # signal_data is the dict from AISignalGenerator
     """
     Formats a signal dictionary into a MarkdownV2 string for Telegram.
+    Includes AI confidence, SL/TP, and all technical indicators.
     """
     if not signal_data:
         return escape_markdown_v2("No signal data to format.")
 
+    # Helper to format price or return 'N/A', then escape
+    def format_price(value, default_precision=8):
+        if value is None: return "N/A"
+        try:
+            # Ensure value is string for Decimal conversion if it's already float/int
+            return escape_markdown_v2(f"{Decimal(str(value)):.{default_precision}f}")
+        except (InvalidOperation, TypeError, ValueError):
+            return escape_markdown_v2(str(value)) # Fallback to string if not Decimal-able
+
+    # Helper to format float (like confidence, RSI) or return 'N/A', then escape
+    def format_float(value, precision=2):
+        if value is None: return "N/A"
+        try:
+            return escape_markdown_v2(f"{float(value):.{precision}f}")
+        except (ValueError, TypeError):
+            return escape_markdown_v2(str(value))
+
     symbol = escape_markdown_v2(signal_data.get('symbol', 'N/A'))
     signal_type = escape_markdown_v2(signal_data.get('signal_type', 'N/A').upper())
+    price_at_signal = format_price(signal_data.get('price')) # Price from AI signal
 
-    price_val = signal_data.get('price', 0.0)
-    try:
-        price_str = escape_markdown_v2(f"{float(price_val):.8f}")
-    except ValueError:
-        price_str = escape_markdown_v2("Invalid price")
+    ai_model = escape_markdown_v2(signal_data.get('ai_model', 'N/A'))
+    ai_confidence = format_float(signal_data.get('confidence', 0.0) * 100, precision=2) + "%" # Display as percentage
+    ai_reason = escape_markdown_v2(signal_data.get('reason', 'N/A'))
+    stop_loss = format_price(signal_data.get('suggested_stop_loss'))
+    take_profit = format_price(signal_data.get('suggested_take_profit'))
 
-    confidence_val = signal_data.get('confidence', 0.0)
-    try:
-        confidence_str = escape_markdown_v2(f"{float(confidence_val)*100:.2f}%")
-    except ValueError:
-        confidence_str = escape_markdown_v2("Invalid confidence")
+    # Technical Indicators from the signal_data (which should now include them)
+    sma = format_price(signal_data.get('sma')) # From processed_data merged into signal by run_trading_bot
+    rsi = format_float(signal_data.get('rsi'))
+    macd_line = format_price(signal_data.get('macd'))
+    # macd_signal = format_price(signal_data.get('macd_signal_value')) # If available
+    # macd_hist = format_price(signal_data.get('macd_histogram_value')) # If available
 
-    reason = escape_markdown_v2(signal_data.get('reason', 'No specific reason provided.'))
+    bb_middle = format_price(signal_data.get('bb_middle'))
+    bb_upper = format_price(signal_data.get('bb_upper'))
+    bb_lower = format_price(signal_data.get('bb_lower'))
 
-    message = f"""*(Signal) New Trading Signal (Signal)*
+    # Header
+    header_emoji = "🚀" if signal_type == "BUY" else "🔻" if signal_type == "SELL" else "➡️" # HOLD or other
+    message_title = escape_markdown_v2(f"{header_emoji} AI Trading Signal: {signal_type} {symbol} {header_emoji}")
 
-*Symbol:* `{symbol}`
-*Type:* `{signal_type}`
-*Price:* `{price_str}`
-*Confidence:* `{confidence_str}`
+    # Core Signal Info
+    core_info = [
+        f"*Symbol:* `{symbol}`",
+        f"*Type:* `{signal_type}`",
+        f"*Signal Price:* `{price_at_signal}`",
+        f"*AI Model:* `{ai_model}`",
+        f"*Confidence:* `{ai_confidence}`",
+    ]
+    if stop_loss != "N/A": core_info.append(f"*Suggested SL:* `{stop_loss}`")
+    if take_profit != "N/A": core_info.append(f"*Suggested TP:* `{take_profit}`")
 
-*Reason:* _{reason}_
+    # Technical Indicators Block
+    indicators_info = [
+        f"*Indicators at Signal:*",
+        f"  SMA (20p): `{sma}`", # Assuming 20p, adjust if window is dynamic in message
+        f"  RSI (14p): `{rsi}`",
+        f"  MACD Line: `{macd_line}`",
+        # f"  MACD Signal: `{macd_signal}`", # Uncomment when available
+        # f"  MACD Hist: `{macd_hist}`", # Uncomment when available
+        f"  BB Middle: `{bb_middle}`",
+        f"  BB Upper: `{bb_upper}`",
+        f"  BB Lower: `{bb_lower}`",
+    ]
 
-_Please manage your risk appropriately\._"""
-    return message.strip()
+    # AI Reasoning
+    reasoning_info = [
+        f"*AI Reasoning:*",
+        f"_{ai_reason}_"
+    ]
+
+    disclaimer = f"_Disclaimer: Trading involves risk\. This is an AI\-generated signal, not financial advice\._"
+
+    # Assemble message parts
+    message_parts = [
+        message_title,
+        "", # Newline
+        "\n".join(core_info),
+        "", # Newline
+        "\n".join(indicators_info),
+        "", # Newline
+        "\n".join(reasoning_info),
+        "", # Newline
+        disclaimer
+    ]
+
+    return "\n".join(message_parts).strip()
 
 async def main():
     # This main function now uses the globally defined (settings-aware) tokens/chat_id

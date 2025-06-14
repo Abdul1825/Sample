@@ -1,6 +1,8 @@
 Django
 djangorestframework
+asgiref # For sync_to_async
 
 python-binance
 python-telegram-bot
 python-dotenv
+httpx
