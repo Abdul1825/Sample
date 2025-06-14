@@ -136,3 +136,7 @@ OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', None)
 # You can choose a default free model from OpenRouter, e.g.:
 # 'mistralai/mistral-7b-instruct:free', 'nousresearch/nous-capybara-7b:free', 'gryphe/mythomist-7b:free'
 OPENROUTER_MODEL_NAME = os.environ.get('OPENROUTER_MODEL_NAME', 'mistralai/mistral-7b-instruct:free')
+
+# --- Optional Additional AI Models for Consensus ---
+OPENROUTER_MODEL_NAME_2 = os.environ.get('OPENROUTER_MODEL_NAME_2', None)
+OPENROUTER_MODEL_NAME_3 = os.environ.get('OPENROUTER_MODEL_NAME_3', None)

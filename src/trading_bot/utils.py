@@ -95,40 +95,111 @@ def calculate_rsi(prices_deque: deque, window: int = 14) -> Decimal | None:
 
 
 def calculate_macd(prices_deque: deque, short_window: int = 12, long_window: int = 26, signal_window: int = 9) -> dict[str, Decimal | None] | None:
-    """Calculates MACD, Signal Line, and Histogram."""
-    if not prices_deque or len(prices_deque) < long_window: # Need enough prices for the longest EMA
+    """
+    Calculates MACD Line, Signal Line, and Histogram.
+    Requires enough prices in prices_deque to compute all necessary EMAs.
+    The EMAs are calculated over the historical price data to derive the MACD line series first.
+    Then, an EMA of this MACD line series is calculated to get the signal line.
+    """
+    required_len_for_long_ema = long_window
+    # For EMA of MACD line (signal line), we need at least `signal_window` MACD values.
+    # Each MACD value needs `long_window` prices.
+    # So, total prices needed = `long_window` (for first MACD value) + `signal_window - 1` (for subsequent MACD values for EMA)
+    # However, calculate_ema itself takes a list and calculates EMA based on that list's length.
+
+    if not prices_deque or len(prices_deque) < long_window: # Minimum for the initial EMAs
+        # print(f"MACD: Not enough prices. Have {len(prices_deque)}, need {long_window}")
         return None
 
     prices = list(prices_deque) # Work with a list of Decimals
 
     try:
-        ema_short = calculate_ema(prices, short_window)
-        ema_long = calculate_ema(prices, long_window)
+        # Calculate Short EMA series and Long EMA series
+        # calculate_ema returns the *last* EMA value for the given price series and window.
+        # To get a series of EMAs, we need to call it iteratively or adapt it.
+        # Let's adapt calculate_ema to optionally return the full series.
 
-        if ema_short is None or ema_long is None:
-            return None # Not enough data for EMAs
+        # Temporarily modify calculate_ema to return series for internal MACD use
+        def _calculate_ema_series(series_prices: list[Decimal], window: int) -> list[Decimal | None]:
+            if not series_prices or len(series_prices) < window:
+                return [None] * len(series_prices) # Return None for all if not enough data for first EMA
 
-        macd_line = ema_short - ema_long
+            multiplier = Decimal(2) / Decimal(window + 1)
+            ema_values = [None] * (window - 1) # No EMA for first window-1 periods
 
-        # To calculate the signal line, we need a history of MACD line values
-        # This basic implementation can't do that directly from just prices_deque for signal line's EMA.
-        # A more advanced implementation would store MACD values over time.
-        # For this version, we'll return None for signal and histogram if we can't calculate them here.
-        # OR, as a simplification for this step, we'll calculate signal line if we had enough historical MACD values.
-        # This function is called with the latest prices_deque. We cannot easily get historical MACD values from it.
-        # So, for now, signal_line and histogram will be None.
-        # TODO: Refactor to allow MACD history for signal line calculation or accept MACD history.
+            # Initial SMA for the first EMA value
+            initial_sma_sum = sum(series_prices[i] for i in range(window))
+            current_ema = initial_sma_sum / Decimal(window)
+            ema_values.append(current_ema)
 
-        # For a full MACD implementation, you'd typically maintain a list of MACD values
-        # and then calculate an EMA of those MACD values for the signal line.
-        # For now, returning what we can:
+            for i in range(window, len(series_prices)):
+                current_ema = (series_prices[i] * multiplier) + (current_ema * (Decimal(1) - multiplier))
+                ema_values.append(current_ema)
+            return ema_values
+
+        ema_short_series = _calculate_ema_series(prices, short_window)
+        ema_long_series = _calculate_ema_series(prices, long_window)
+
+        # MACD line series: ema_short - ema_long
+        # Both series must have a value (not None) to calculate MACD
+        macd_line_series = []
+        # Start from long_window - 1 index because that's where ema_long_series gets its first value
+        # and ema_short_series will also have a value there if short_window < long_window.
+        min_len_for_macd_calc = long_window -1 # index
+
+        if len(prices) <= min_len_for_macd_calc: # Not enough data for even one MACD value
+             # print("MACD: Not enough data for even one MACD line value.")
+             return None
+
+        for i in range(min_len_for_macd_calc, len(prices)):
+            if ema_short_series[i] is not None and ema_long_series[i] is not None:
+                macd_line_series.append(ema_short_series[i] - ema_long_series[i])
+            else:
+                # This implies not enough data from the start of prices for one of the EMAs at this point.
+                # Should fill with None to maintain series length if needed, but MACD calculation stops here.
+                # For simplicity, if we encounter this, it means earlier EMAs were not possible.
+                # However, _calculate_ema_series should fill initial parts with None.
+                # Let's assume if one is None, the other might be too, or calculation is invalid.
+                # We need a continuous series of MACD values for its EMA (signal line).
+                # If there's a gap, the signal line calculation would be problematic.
+                # For now, we'll only proceed if we have a continuous recent set of MACD values.
+                pass # Will result in shorter macd_line_series if Nones are present early
+
+        if len(macd_line_series) < signal_window: # Not enough MACD line values for its EMA (signal line)
+            # print(f"MACD: Not enough MACD line values for signal line. Have {len(macd_line_series)}, need {signal_window}")
+            # Return only MACD line if available, others None
+            latest_macd_line = macd_line_series[-1] if macd_line_series else None
+            return {
+                "macd": latest_macd_line,
+                "signal": None,
+                "histogram": None
+            }
+
+        # Calculate Signal Line: EMA of the MACD line series
+        # We need the _calculate_ema_series to handle a series of Decimals directly.
+        # The existing calculate_ema (non-series) can be used if we want just the *last* signal line value.
+        # Let's use the main calculate_ema for the final signal line value from the macd_line_series.
+
+        # Use the main calculate_ema for the signal line (EMA of MACD values)
+        # Ensure `calculate_ema` can handle a list of Decimals
+        signal_line = calculate_ema(macd_line_series, signal_window)
+
+
+        latest_macd_line = macd_line_series[-1] if macd_line_series else None # Get the most recent MACD line value
+
+        histogram_value = None
+        if latest_macd_line is not None and signal_line is not None:
+            histogram_value = latest_macd_line - signal_line
+
         return {
-            "macd": macd_line,
-            "signal": None, # Placeholder: requires MACD history
-            "histogram": None # Placeholder: requires MACD and signal
+            "macd": latest_macd_line,
+            "signal": signal_line,
+            "histogram": histogram_value
         }
     except Exception as e:
         print(f"Error in MACD calculation: {e}")
+        import traceback
+        traceback.print_exc() # Print full traceback for debugging
         return None
 
 

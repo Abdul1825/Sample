@@ -1,44 +1,51 @@
-import httpx # For making HTTP requests to OpenRouter
+import httpx
 import json
 import os
+from django.conf import settings
 from decimal import Decimal, InvalidOperation
-from django.conf import settings # To get OPENROUTER_API_KEY
+import asyncio # For concurrent API calls
 
 class AISignalGenerator:
     def __init__(self, config=None):
-        """
-        Initialize the AI Signal Generator.
-        'config' can be a dictionary with settings. OPENROUTER_API_KEY is expected.
-        """
         self.config = config if config else {}
         self.api_key = getattr(settings, 'OPENROUTER_API_KEY', os.environ.get('OPENROUTER_API_KEY'))
-        self.model_name = getattr(settings, 'OPENROUTER_MODEL_NAME', "mistralai/mistral-7b-instruct:free") # Default free model
+
+        self.primary_model_name = getattr(settings, 'OPENROUTER_MODEL_NAME', "mistralai/mistral-7b-instruct:free")
+        self.secondary_model_name = getattr(settings, 'OPENROUTER_MODEL_NAME_2', None)
+        self.tertiary_model_name = getattr(settings, 'OPENROUTER_MODEL_NAME_3', None)
+
+        self.model_names_to_query = [self.primary_model_name]
+        if self.secondary_model_name and self.secondary_model_name.strip():
+            self.model_names_to_query.append(self.secondary_model_name.strip())
+        if self.tertiary_model_name and self.tertiary_model_name.strip():
+            self.model_names_to_query.append(self.tertiary_model_name.strip())
+        # Remove duplicates if any model is specified multiple times
+        self.model_names_to_query = sorted(list(set(self.model_names_to_query)))
+
 
         if not self.api_key:
-            print("WARNING: OPENROUTER_API_KEY not found in Django settings or environment variables.")
+            print("WARNING: AISignalGenerator - OPENROUTER_API_KEY not found.")
 
-        # HTTP client that can be reused for multiple requests
-        self.client = httpx.AsyncClient(timeout=30.0) # 30 seconds timeout
-        print(f"AISignalGenerator initialized with model: {self.model_name}")
+        self.client = httpx.AsyncClient(timeout=45.0) # Increased timeout for potentially multiple calls
+        print(f"AISignalGenerator initialized. Primary model: {self.primary_model_name}. All models to query: {self.model_names_to_query}")
 
     async def close_client(self):
-        """Closes the HTTP client session."""
         await self.client.aclose()
 
     def _construct_prompt(self, processed_data):
-        """
-        Constructs a detailed prompt for the AI model including multiple technical indicators.
-        Asks for a structured JSON response including decision, reason, confidence, SL, and TP.
-        """
         symbol = processed_data.get('symbol', 'N/A')
         last_price = processed_data.get('last_price', 'N/A')
         sma = processed_data.get('sma', 'N/A')
         rsi = processed_data.get('rsi', 'N/A')
-        macd_line = processed_data.get('macd', 'N/A') # MACD line
-        # Note: MACD signal/histogram might be N/A if not fully implemented yet in utils
+        macd_line = processed_data.get('macd_line', 'N/A')
+        macd_signal = processed_data.get('macd_signal', 'N/A')
+        macd_histogram = processed_data.get('macd_histogram', 'N/A')
         bb_middle = processed_data.get('bb_middle', 'N/A')
         bb_upper = processed_data.get('bb_upper', 'N/A')
         bb_lower = processed_data.get('bb_lower', 'N/A')
+        recent_prices_list = processed_data.get('recent_price_trend', []) # Expect a list of price strings
+        recent_prices_str = ", ".join(recent_prices_list) if recent_prices_list else "N/A"
+
 
         prompt = (
             f"You are an expert trading analysis AI. Based on the following real-time market data for {symbol}, "
@@ -47,267 +54,157 @@ class AISignalGenerator:
             f"suggest a stop-loss price and a take-profit price.\n\n"
             f"Market Data for {symbol}:\n"
             f"- Current Price: {last_price}\n"
+            f"- Recent Price Trend (last {len(recent_prices_list)} prices, latest first if applicable, or just recent sequence): [{recent_prices_str}]\n" # Added trend
             f"- 20-period SMA: {sma}\n"
             f"- 14-period RSI: {rsi}\n"
-            f"- MACD Line (12,26): {macd_line}\n"
+            f"- MACD (12,26,9): Line={macd_line}, Signal={macd_signal}, Histogram={macd_histogram}\n"
             f"- Bollinger Bands (20,2): Middle={bb_middle}, Upper={bb_upper}, Lower={bb_lower}\n\n"
-            f"Your analysis should consider these indicators. For example, is the price near Bollinger Bands? "
-            f"What does RSI suggest about overbought/oversold conditions? How is MACD trending?\n\n"
+            f"Your analysis should consider all these indicators and the recent price trend.\n\n"
             f"Respond *only* with a valid JSON object formatted exactly as follows:\n"
             f'{{"decision": "BUY|SELL|HOLD", "reason": "Your detailed reasoning here.", "confidence_score": <float_0_to_1>, '
             f'"suggested_stop_loss": <float_price_or_null>, "suggested_take_profit": <float_price_or_null>}}\n'
-            f"Ensure numbers are actual numbers (e.g., 0.75, 50000.50) not strings in the JSON, and use null for SL/TP if not applicable (e.g. for HOLD)."
+            f"Ensure numbers are actual numbers and use null for SL/TP if not applicable."
         )
         return prompt
 
-    async def _query_openrouter_api(self, prompt):
-        """
-        Queries the OpenRouter API with the given prompt.
-        """
-        if not self.api_key:
-            print("AISignalGenerator: Error - OpenRouter API key is not set.")
-            return None
-
+    async def _query_single_model(self, prompt, model_name_to_query):
+        if not self.api_key: return {"error": "API key not set"}
         try:
             response = await self.client.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": self.model_name,
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ]
-                }
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={"model": model_name_to_query, "messages": [{"role": "user", "content": prompt}]}
             )
-            response.raise_for_status()  # Raise an exception for HTTP errors (4XX or 5XX)
+            response.raise_for_status()
             return response.json()
         except httpx.TimeoutException:
-            print(f"AISignalGenerator: Timeout occurred while querying OpenRouter API for model {self.model_name}.")
-            return None
+            return {"error": f"Timeout querying {model_name_to_query}"}
         except httpx.NetworkError as e:
-            print(f"AISignalGenerator: Network error occurred while querying OpenRouter API: {e}")
-            return None
+            return {"error": f"Network error querying {model_name_to_query}: {e}"}
         except httpx.HTTPStatusError as e:
-            # Log more details for HTTPStatusError, especially for 4xx errors
-            error_details = f"HTTP error: {e.response.status_code} {e.response.reason_phrase}."
-            try:
-                error_body = e.response.json() # Try to get JSON error body
-                error_details += f" Details: {error_body.get('error', {}).get('message', e.response.text)}"
-            except json.JSONDecodeError:
-                error_details += f" Details: {e.response.text}" # Fallback to raw text
-            print(f"AISignalGenerator: Error querying OpenRouter ({self.model_name}): {error_details}")
-            if e.response.status_code == 401: # Unauthorized
-                print("AISignalGenerator: Hint: Check if your OpenRouter API key is correct and has funds/access.")
-            elif e.response.status_code == 429: # Rate limit
-                print("AISignalGenerator: Hint: You might be hitting OpenRouter API rate limits.")
-            return None
-        except httpx.RequestError as e: # Catch other request errors
-            print(f"AISignalGenerator: Request error querying OpenRouter: {e}")
-            return None
-        except json.JSONDecodeError as e: # If OpenRouter returns non-JSON response unexpectedly
-            print(f"AISignalGenerator: Error decoding JSON response from OpenRouter: {e}")
-            return None
+            error_body_text = e.response.text[:200] # Limit error body length
+            return {"error": f"HTTP {e.response.status_code} querying {model_name_to_query}. Details: {error_body_text}"}
         except Exception as e:
-            print(f"AISignalGenerator: Unexpected error querying OpenRouter: {e}")
-            return None
+            return {"error": f"Unexpected error querying {model_name_to_query}: {str(e)[:200]}"}
 
-    def _parse_ai_response(self, ai_response_json, symbol, last_price_str, sma_value=None): # last_price is string here
-        """
-        Parses the AI's structured JSON response.
-        sma_value is passed for inclusion in the final signal dict if needed, though AI might use it too.
-        """
+    def _parse_ai_response(self, ai_response_json, symbol, last_price_str, processed_data_for_signal, model_name_queried):
+        # This function now parses a single model's response and includes the model name.
+        # The merging of processed_data will happen in generate_signal after all responses are gathered.
         try:
+            if ai_response_json.get("error"): # Check if it's an error dict from _query_single_model
+                print(f"AISignalGenerator: Error from model {model_name_queried}: {ai_response_json['error']}")
+                return {"model_name": model_name_queried, "decision": "ERROR", "reason": ai_response_json['error']}
+
             content_str = ai_response_json['choices'][0]['message']['content']
-            # Remove potential markdown backticks if AI wraps JSON in them
             if content_str.startswith("```json"): content_str = content_str[7:]
             if content_str.startswith("```"): content_str = content_str[3:]
             if content_str.endswith("```"): content_str = content_str[:-3]
             content_str = content_str.strip()
 
-            signal_json = json.loads(content_str)
+            signal_json_from_ai = json.loads(content_str)
 
-            decision = signal_json.get('decision', 'HOLD').upper()
-            reason = signal_json.get('reason', 'No reason provided by AI.')
-            confidence = signal_json.get('confidence_score', 0.5) # Default confidence
-            stop_loss = signal_json.get('suggested_stop_loss')
-            take_profit = signal_json.get('suggested_take_profit')
+            decision = signal_json_from_ai.get('decision', 'HOLD').upper()
+            reason = signal_json_from_ai.get('reason', 'N/A')
+            confidence = signal_json_from_ai.get('confidence_score', 0.5)
+            stop_loss = signal_json_from_ai.get('suggested_stop_loss')
+            take_profit = signal_json_from_ai.get('suggested_take_profit')
 
-            # Validate types, convert if necessary
-            try:
-                confidence = float(confidence)
-            except (ValueError, TypeError):
-                print(f"Warning: Could not parse confidence '{confidence}' as float. Defaulting to 0.5.")
-                confidence = 0.5
+            try: confidence = float(confidence)
+            except: confidence = 0.5
 
-            try:
-                current_price_decimal = Decimal(str(last_price_str))
-            except InvalidOperation:
-                print(f"Error: Invalid last_price_str '{last_price_str}' for Decimal conversion.")
-                return None # Cannot proceed without a valid price
+            def parse_price(val):
+                if val is None: return None
+                try: return Decimal(str(val))
+                except: return None
 
-            def parse_price_field(price_field):
-                if price_field is None or isinstance(price_field, (str, int, float)):
-                    try:
-                        return Decimal(str(price_field)) if price_field is not None else None
-                    except (InvalidOperation, ValueError, TypeError):
-                        print(f"Warning: Could not parse price field '{price_field}' as Decimal. Setting to None.")
-                        return None
-                return None
+            parsed_signal = {
+                "model_name": model_name_queried,
+                "decision": decision,
+                "reason": reason,
+                "confidence": confidence,
+                "suggested_stop_loss": parse_price(stop_loss),
+                "suggested_take_profit": parse_price(take_profit),
+                "price_at_signal_generation": parse_price(last_price_str) # Price when AI was queried
+            }
+            return parsed_signal
 
-            stop_loss_decimal = parse_price_field(stop_loss)
-            take_profit_decimal = parse_price_field(take_profit)
-
-            if decision in ['BUY', 'SELL']:
-                signal_dict = {
-                    'symbol': symbol,
-                    'signal_type': decision,
-                    'price': current_price_decimal, # Use Decimal price
-                    'confidence': confidence,
-                    'reason': reason,
-                    'ai_model': self.model_name,
-                    'suggested_stop_loss': stop_loss_decimal,
-                    'suggested_take_profit': take_profit_decimal
-                }
-                if sma_value is not None: # Ensure sma_value is also Decimal or compatible string
-                    try: signal_dict['sma'] = Decimal(str(sma_value))
-                    except: signal_dict['sma'] = str(sma_value) # Fallback to string if not Decimal-able
-
-                return signal_dict
-            elif decision == 'HOLD':
-                print(f"AISignalGenerator: AI recommends HOLD for {symbol}. Reason: {reason}, Confidence: {confidence:.2f}")
-                return None
-            else:
-                print(f"AISignalGenerator: Unknown decision '{decision}' from AI.")
-                return None
-
-        except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
-            print(f"AISignalGenerator: Error parsing AI response JSON: {e}. Response content: '{content_str[:500]}...'") # Log part of content
-            return None
         except Exception as e:
-            print(f"AISignalGenerator: Unexpected error during AI response parsing: {e}. Response: {ai_response_json}")
-            return None
+            error_info = str(ai_response_json)[:200] # Get first 200 chars of response if parsing fails
+            print(f"AISignalGenerator: Error parsing response from {model_name_queried}: {e}. Response: {error_info}...")
+            return {"model_name": model_name_queried, "decision": "ERROR", "reason": f"Parsing error: {e}"}
 
 
     async def generate_signal(self, processed_data):
-        """
-        Process incoming processed_data, query AI, and generate a trading signal.
-        'processed_data' is expected to include 'symbol', 'last_price', and optionally 'sma'.
-        """
-        if not self.api_key:
-            print("AISignalGenerator: Cannot generate signal, OpenRouter API key not set.")
-            return None
-
+        if not self.api_key: print("AISignalGenerator: API key not set."); return None
         if not processed_data or 'last_price' not in processed_data or 'symbol' not in processed_data:
-            print("AISignalGenerator: Invalid or incomplete processed data for AI.")
-            return None
+            print("AISignalGenerator: Invalid processed data."); return None
 
         symbol = processed_data.get('symbol')
-        last_price = processed_data.get('last_price')
-        sma_value = processed_data.get('sma') # Get SMA from processed_data
-
+        last_price_str = processed_data.get('last_price')
         prompt = self._construct_prompt(processed_data)
-        # print(f"AISignalGenerator: Querying AI for {symbol} with prompt: {prompt[:100]}...")
 
-        ai_response_json = await self._query_openrouter_api(prompt)
+        # Query all configured models concurrently
+        tasks = [self._query_single_model(prompt, model_name) for model_name in self.model_names_to_query]
+        all_responses_json = await asyncio.gather(*tasks)
 
-        if ai_response_json:
-            return self._parse_ai_response(ai_response_json, symbol, last_price, sma_value) # Pass sma_value
-        else:
-            print(f"AISignalGenerator: No valid response from AI for {symbol}.")
-            return None
+        parsed_signals_from_models = []
+        for i, resp_json in enumerate(all_responses_json):
+            model_name = self.model_names_to_query[i]
+            parsed = self._parse_ai_response(resp_json, symbol, last_price_str, processed_data, model_name)
+            parsed_signals_from_models.append(parsed)
 
-    def process_market_data_for_ai(self, market_data):
-        """
-        Transforms raw market data into a format suitable for the AI model.
-        (This function is largely the same as before but is crucial input for the AI)
-        """
+        # Basic Consensus Logic (Primary model's decision is leading)
+        primary_signal_parsed = None
+        for p_signal in parsed_signals_from_models:
+            if p_signal["model_name"] == self.primary_model_name:
+                primary_signal_parsed = p_signal
+                break
+
+        if not primary_signal_parsed or primary_signal_parsed["decision"] == "ERROR":
+            print(f"AISignalGenerator: Primary model {self.primary_model_name} failed or returned error.")
+            return None # Or handle fallback if desired
+
+        if primary_signal_parsed["decision"] == "HOLD":
+            print(f"AISignalGenerator: Primary model ({self.primary_model_name}) recommends HOLD for {symbol}.")
+            return None # No actionable signal for HOLD
+
+        # Consensus details
+        agreed_decisions = [s["decision"] for s in parsed_signals_from_models if s["decision"] == primary_signal_parsed["decision"]]
+        consensus_count = len(agreed_decisions)
+        total_queried = len(self.model_names_to_query)
+
+        # Construct final signal dictionary
+        final_signal_dict = {k: v for k, v in processed_data.items()} # Start with all indicators
+
+        # Convert numeric strings in final_signal_dict to Decimals where appropriate
+        for key_to_convert in ['sma', 'rsi', 'macd_line', 'macd_signal', 'macd_histogram', 'bb_middle', 'bb_upper', 'bb_lower', 'last_price']:
+            if key_to_convert in final_signal_dict:
+                try: final_signal_dict[key_to_convert] = Decimal(str(final_signal_dict[key_to_convert]))
+                except (InvalidOperation, TypeError, ValueError): pass
+
+        final_signal_dict.update({
+            'symbol': symbol,
+            'signal_type': primary_signal_parsed["decision"],
+            'price': primary_signal_parsed["price_at_signal_generation"], # Price from primary model context
+            'confidence': primary_signal_parsed["confidence"], # From primary model
+            'reason': primary_signal_parsed["reason"], # From primary model
+            'ai_model': self.primary_model_name, # Primary model is the source of the main signal
+            'suggested_stop_loss': primary_signal_parsed["suggested_stop_loss"],
+            'suggested_take_profit': primary_signal_parsed["suggested_take_profit"],
+            'consensus_models_queried': total_queried,
+            'consensus_models_agreed': consensus_count,
+            'all_ai_responses': parsed_signals_from_models # Store all raw parsed responses for logging/DB
+        })
+
+        print(f"AISignalGenerator: Final signal for {symbol}: {primary_signal_parsed['decision']} (Confidence: {primary_signal_parsed['confidence']:.2f}). Consensus: {consensus_count}/{total_queried}.")
+        return final_signal_dict
+
+    def process_market_data_for_ai(self, market_data): # Remains largely the same
         if market_data and market_data.get('s') and market_data.get('c'):
-            processed = {
-                'symbol': market_data.get('s'),
-                'last_price': market_data.get('c'),
-                'price_change_percent': market_data.get('P'),
-                'high_price': market_data.get('h'),
-                'low_price': market_data.get('l'),
-                'volume': market_data.get('v'),
+            return {
+                'symbol': market_data.get('s'), 'last_price': market_data.get('c'),
+                'price_change_percent': market_data.get('P'), 'high_price': market_data.get('h'),
+                'low_price': market_data.get('l'), 'volume': market_data.get('v'),
                 'timestamp': market_data.get('E')
-                # Add more fields or calculated indicators here in the future
             }
-            return processed
-        print(f"AISignalGenerator: Could not process raw market data: {market_data}")
         return None
-
-# Example Usage (for testing this module directly - requires async context and API key):
-async def _test_ai_signal_generator():
-    # IMPORTANT: To test this, you need to set OPENROUTER_API_KEY environment variable
-    # or ensure it's in a .env file loaded by your test runner.
-    print("Testing AISignalGenerator...")
-    if not os.environ.get('OPENROUTER_API_KEY') and not getattr(settings, 'OPENROUTER_API_KEY', None):
-        print("Skipping AISignalGenerator test: OPENROUTER_API_KEY not found.")
-        # Try to load from .env for local testing if Django settings not fully configured yet
-        from dotenv import load_dotenv
-        load_dotenv()
-        if not os.environ.get('OPENROUTER_API_KEY'):
-             print("Still no API Key after trying .env. AISignalGenerator test will likely fail to query API.")
-
-
-    # Mock Django settings if not running in full Django context for testing
-    class MockSettings:
-        OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY')
-        OPENROUTER_MODEL_NAME = "mistralai/mistral-7b-instruct:free"
-        # Or use another free model: "nousresearch/nous-capybara-7b:free", "gryphe/mythomist-7b:free"
-
-    global settings # Allow reassignment for this test block
-    if not getattr(settings, 'OPENROUTER_API_KEY', None): # If Django settings not really loaded
-        settings = MockSettings()
-
-
-    generator = AISignalGenerator()
-
-    sample_market_data = {
-        's': 'BTCUSDT', 'c': '60000.00', 'P': '1.5', 'h': '60500.00', 'l': '59500.00', 'v': '1000', 'E': 1672515782134
-    }
-    processed_data = generator.process_market_data_for_ai(sample_market_data)
-
-    if processed_data:
-        print(f"Test: Processed data for AI: {processed_data}")
-        signal = await generator.generate_signal(processed_data)
-        if signal:
-            print(f"Test: Generated Signal: {signal}")
-        else:
-            print("Test: No signal generated.")
-    else:
-        print("Test: Could not process sample market data.")
-
-    await generator.close_client() # Important to close the client
-
-if __name__ == '__main__':
-    # This test needs to be run in an environment where Django settings are available
-    # or mocked, and OPENROUTER_API_KEY is set.
-    # Example: python -m dotenv run python src/trading_bot/ai_signal_generator.py
-    # (after pip install python-dotenv)
-
-    # A bit tricky to run directly due to Django settings dependency.
-    # For now, this __main__ block is more for illustration of how to call it.
-    # Proper testing would involve Django's test framework or careful mocking.
-    print("To test AISignalGenerator directly, ensure OPENROUTER_API_KEY is set in your environment or .env file,")
-    print("and run within a Django context or with mocked settings.")
-    # asyncio.run(_test_ai_signal_generator()) # Uncomment carefully for local testing
-
-    # To make it runnable for basic structure check without full Django:
-    class MinimalSettings:
-        OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY_TEST', None) # Use a test key if needed
-        OPENROUTER_MODEL_NAME = "mistralai/mistral-7b-instruct:free"
-
-    original_settings = settings # Store original settings
-    settings = MinimalSettings()
-
-    if settings.OPENROUTER_API_KEY:
-        print(f"Running test with API key: {settings.OPENROUTER_API_KEY[:5]}...")
-        asyncio.run(_test_ai_signal_generator())
-    else:
-        print("Skipping direct test run as OPENROUTER_API_KEY_TEST is not set.")
-
-    settings = original_settings # Restore original settings

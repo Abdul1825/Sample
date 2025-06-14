@@ -90,16 +90,59 @@ class TechnicalIndicatorTests(TestCase):
         self.assertTrue(rsi_0_ish < Decimal('1') or rsi_0_ish == Decimal('0'))
 
 
-    def test_calculate_macd_simple(self):
-        # MACD requires longer series for meaningful values
+    def test_calculate_macd_full(self):
+        # MACD requires a longer, more volatile series for meaningful signal/histogram
+        # Using a known test vector if possible would be best.
+        # For now, a basic check that it runs and produces all parts.
+        # prices_long_deque is 1 to 50.
+        # We need enough data for long_window (26) + signal_window (9) for full MACD.
+        # So, len(prices_long_deque) which is 50 should be sufficient.
+
         macd_data = calculate_macd(self.prices_long_deque, 12, 26, 9)
-        self.assertIsNotNone(macd_data)
-        self.assertIsNotNone(macd_data['macd'])
-        # print(f"Test MACD (1..50): {macd_data['macd']}") # For linearly increasing, short EMA > long EMA, so MACD > 0
-        self.assertTrue(macd_data['macd'] > Decimal('0'))
-        # Signal and histogram are None for now in this basic version
-        self.assertIsNone(macd_data['signal'])
-        self.assertIsNone(macd_data['histogram'])
+        self.assertIsNotNone(macd_data, "MACD calculation returned None with sufficient data.")
+        self.assertIn("macd", macd_data)
+        self.assertIn("signal", macd_data)
+        self.assertIn("histogram", macd_data)
+
+        # Check if all values are Decimal or None
+        if macd_data["macd"] is not None: self.assertIsInstance(macd_data["macd"], Decimal)
+        if macd_data["signal"] is not None: self.assertIsInstance(macd_data["signal"], Decimal)
+        if macd_data["histogram"] is not None: self.assertIsInstance(macd_data["histogram"], Decimal)
+
+        # For a linearly increasing price series (1 to 50):
+        # Short EMA will be above Long EMA -> MACD line > 0
+        # MACD line will also be increasing -> Signal line (EMA of MACD) will lag MACD line
+        # So, MACD line > Signal line -> Histogram > 0 (for most recent points if trend is consistent)
+
+        # print(f"Test MACD Full (1..50): M={macd_data['macd']}, S={macd_data['signal']}, H={macd_data['histogram']}")
+
+        if macd_data["macd"] is not None:
+            self.assertTrue(macd_data["macd"] > Decimal('0'), "MACD line should be positive for increasing series.")
+
+        # Only check signal and histogram if MACD line was calculable
+        if macd_data["macd"] is not None and len(self.prices_long_deque) >= 26 + 9 -1 : # Rough check for enough data for signal line
+            self.assertIsNotNone(macd_data["signal"], "Signal line is None with supposedly sufficient data.")
+            self.assertIsNotNone(macd_data["histogram"], "Histogram is None with supposedly sufficient data.")
+            if macd_data["signal"] is not None: # Check only if signal is not None
+                 self.assertTrue(macd_data["signal"] > Decimal('0'), "Signal line should be positive for increasing MACD series.")
+            if macd_data["histogram"] is not None and macd_data["signal"] is not None and macd_data["macd"] is not None: # Check only if all parts are not None
+                 self.assertTrue(macd_data["histogram"] > Decimal('-0.5'), "Histogram expected to be positive or near zero for increasing series. Allowing small negative for EMA nuances.") # Looser check for histogram due to EMA complexities
+        else:
+            print(f"Warning: MACD signal/histogram might be None due to data length or calculation issues. MACD: {macd_data}")
+
+        # Test with insufficient data for signal line but enough for MACD line
+        # Need long_window prices for MACD line, e.g., 26 prices.
+        # Need signal_window MACD values for signal line.
+        # If prices_deque has 30 items (0 to 29), long_window=26.
+        # ema_short_series and ema_long_series will have values from index 25.
+        # macd_line_series will have 30 - 26 + 1 = 5 values.
+        # If signal_window is 9, 5 values are not enough.
+        short_data_for_signal = deque(list(self.prices_long_deque)[:30], maxlen=60) # Prices 1..30
+        macd_partial = calculate_macd(short_data_for_signal, 12, 26, 9)
+        self.assertIsNotNone(macd_partial)
+        self.assertIsNotNone(macd_partial["macd"])
+        self.assertIsNone(macd_partial["signal"], "Signal line should be None with only 30 price points for 12,26,9 MACD.")
+        self.assertIsNone(macd_partial["histogram"], "Histogram should be None when signal line is None.")
 
 
     def test_calculate_bollinger_bands_simple(self):

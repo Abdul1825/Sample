@@ -7,22 +7,26 @@ class Signal(models.Model):
     signal_type = models.CharField(max_length=10, db_index=True)
     price = models.DecimalField(max_digits=20, decimal_places=8)
 
-    ai_model = models.CharField(max_length=100, null=True, blank=True)
+    ai_model = models.CharField(max_length=100, null=True, blank=True) # Primary AI model
     ai_confidence_score = models.FloatField(null=True, blank=True)
     ai_reason = models.TextField(null=True, blank=True)
     suggested_stop_loss = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     suggested_take_profit = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
 
+    # Technical Indicator values
     sma_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     rsi_value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-
     macd_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     macd_signal_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     macd_histogram_value = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
-
     bollinger_upper = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     bollinger_middle = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
     bollinger_lower = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+
+    # Consensus fields
+    consensus_models_queried = models.IntegerField(null=True, blank=True)
+    consensus_models_agreed = models.IntegerField(null=True, blank=True)
+    raw_ai_responses = models.JSONField(null=True, blank=True) # Stores list of dicts from each AI model
 
     def __str__(self):
         return f"{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - {self.symbol} - {self.signal_type} @ {self.price:.4f} (AI: {self.ai_model or 'N/A'})"
