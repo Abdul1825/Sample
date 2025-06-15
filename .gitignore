@@ -8,3 +8,6 @@
 trading_signals.csv
 *.csv
 logs/
+
+# Historical market data (downloaded)
+historical_data/

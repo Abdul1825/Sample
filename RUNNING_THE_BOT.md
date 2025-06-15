@@ -142,6 +142,63 @@ This guide provides step-by-step instructions to set up and run the AI Trading S
 5.  **Stopping the Bot**:
     Press `Ctrl+C` in the terminal where the bot is running. It will attempt a graceful shutdown and print operational statistics.
 
+## Downloading Historical Market Data
+
+Before running a backtest, you need to download historical kline (candlestick) data for the trading pair and interval you're interested in.
+
+1.  **Activate Virtual Environment** and navigate to the `src` directory.
+2.  Use the `download_historical_data` command:
+    \`\`\`bash
+    python manage.py download_historical_data <SYMBOL> <INTERVAL> <START_DATE> [--enddate <END_DATE>] [--outputdir <DIR>] [--settings=core.settings]
+    \`\`\`
+    **Arguments:**
+    *   `<SYMBOL>`: Trading symbol (e.g., `BTCUSDT`, `ETHUSDT`).
+    *   `<INTERVAL>`: Kline interval (e.g., `1m`, `5m`, `15m`, `1h`, `4h`, `1d`).
+    *   `<START_DATE>`: Start date for data download (format: `YYYY-MM-DD`).
+    *   `--enddate <END_DATE>`: Optional end date (format: `YYYY-MM-DD`). If not provided, downloads up to the current date.
+    *   `--outputdir <DIR>`: Optional directory to save CSV files (default: `historical_data` in the project root). Data will be saved in subdirectories like `historical_data/SYMBOL/INTERVAL/`.
+    *   `--limit <int>`: Optional. Max klines per API request to Binance (default 1000).
+
+    **Example:**
+    \`\`\`bash
+    python manage.py download_historical_data BTCUSDT 1h 2023-01-01 --enddate 2023-03-31 --settings=core.settings
+    \`\`\`
+    This will download 1-hour klines for BTCUSDT from Jan 1, 2023, to Mar 31, 2023, and save it to `historical_data/BTCUSDT/1h/`.
+
+## Running a Backtest
+
+Once you have downloaded historical data, you can run a backtest using that data.
+
+1.  **Activate Virtual Environment** and navigate to the `src` directory.
+2.  Use the `run_backtest` command:
+    \`\`\`bash
+    python manage.py run_backtest <PATH_TO_DATAFILE> [--initial_capital <FLOAT>] [--commission_pct <FLOAT>] [INDICATOR_OPTIONS...] [--settings=core.settings]
+    \`\`\`
+    **Required Argument:**
+    *   `<PATH_TO_DATAFILE>`: Full path to the CSV file containing the historical kline data (e.g., `../historical_data/BTCUSDT/1h/BTCUSDT_1h_2023-01-01_to_2023-03-31.csv` if running from `src` and data is in root).
+
+    **Optional Financial Arguments:**
+    *   `--initial_capital <float>`: Initial capital for the backtest (default: 10000.0).
+    *   `--commission_pct <float>`: Commission percentage per trade (e.g., `0.001` for 0.1%, default: 0.001).
+
+    **Indicator & Strategy Parameters (same as `run_trading_bot`):**
+    *   `--price_history_len <int>`: Max length of price history deque (default: 60).
+    *   `--recent_trend_len <int>`: Number of recent prices for AI trend context (default: 5).
+    *   `--sma_window <int>`: SMA window (default: 20).
+    *   `--rsi_window <int>`: RSI window (default: 14).
+    *   `--macd_short <int>`: MACD short EMA window (default: 12).
+    *   `--macd_long <int>`: MACD long EMA window (default: 26).
+    *   `--macd_signal_period <int>`: MACD signal EMA window (default: 9).
+    *   `--bb_window <int>`: Bollinger Bands window (default: 20).
+
+    *(Note: AI model configurations like `OPENROUTER_MODEL_NAME`, `AI_FOLLOW_UP_CONFIDENCE_THRESHOLD`, and API call delays like `BACKTEST_AI_CALL_DELAY` are taken from Django settings, which load from your `.env` file.)*
+
+    **Example:**
+    \`\`\`bash
+    python manage.py run_backtest ../historical_data/BTCUSDT/1h/BTCUSDT_1h_2023-01-01_to_2023-03-31.csv --initial_capital=5000 --commission_pct=0.00075 --sma_window=15 --settings=core.settings
+    \`\`\`
+    The backtester will process the historical data using the same AI signal generation logic as the live bot (including making live, rate-limited calls to the OpenRouter AI API). After completion, it will print performance metrics to the console.
+
 ## Running with Docker (Recommended for Consistency)
 
 Using Docker is recommended for running the bot as it provides a consistent environment and simplifies dependency management.

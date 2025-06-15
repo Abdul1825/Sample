@@ -262,3 +262,6 @@ if LOG_TO_FILE:
     LOGGING['loggers']['trading_bot.ai_signal_generator']['handlers'].append('file')
     LOGGING['loggers']['trading_bot.live_data.binance_feed']['handlers'].append('file')
     # LOGGING['root']['handlers'].append('file')
+
+# --- Backtester Settings ---
+BACKTEST_AI_CALL_DELAY = float(os.environ.get('BACKTEST_AI_CALL_DELAY', 2.0)) # Seconds delay between AI calls in backtest
