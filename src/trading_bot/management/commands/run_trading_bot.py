@@ -22,6 +22,7 @@ import csv
 from datetime import datetime
 import traceback
 import httpx
+import random # For jitter in retries
 
 # --- Post-Signal Price Tracking ---
 PRICE_TRACKING_INTERVALS = { # In seconds

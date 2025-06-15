@@ -143,3 +143,122 @@ OPENROUTER_MODEL_NAME_3 = os.environ.get('OPENROUTER_MODEL_NAME_3', None)
 
 # --- AI Follow-up Settings ---
 AI_FOLLOW_UP_CONFIDENCE_THRESHOLD = os.environ.get('AI_FOLLOW_UP_CONFIDENCE_THRESHOLD', '0.65')
+
+# --- AI API Retry Settings ---
+AI_API_MAX_RETRIES = int(os.environ.get('AI_API_MAX_RETRIES', 3))
+AI_API_INITIAL_RETRY_DELAY = int(os.environ.get('AI_API_INITIAL_RETRY_DELAY', 5)) # seconds
+AI_API_MAX_RETRY_DELAY = int(os.environ.get('AI_API_MAX_RETRY_DELAY', 60)) # seconds
+
+# --- Binance WebSocket Settings ---
+BINANCE_WS_STALE_TIMEOUT = float(os.environ.get('BINANCE_WS_STALE_TIMEOUT', 180.0)) # seconds, e.g., 3 minutes
+BINANCE_WS_INITIAL_RECONNECT_DELAY = float(os.environ.get('BINANCE_WS_INITIAL_RECONNECT_DELAY', 5.0)) # seconds
+BINANCE_WS_MAX_RECONNECT_DELAY = float(os.environ.get('BINANCE_WS_MAX_RECONNECT_DELAY', 120.0)) # seconds
+
+# --- Price Fetch Retry Settings (for post-signal tracking) ---
+PRICE_FETCH_MAX_RETRIES = int(os.environ.get('PRICE_FETCH_MAX_RETRIES', 2))
+PRICE_FETCH_INITIAL_RETRY_DELAY = float(os.environ.get('PRICE_FETCH_INITIAL_RETRY_DELAY', 3.0)) # seconds
+PRICE_FETCH_MAX_RETRY_DELAY = float(os.environ.get('PRICE_FETCH_MAX_RETRY_DELAY', 30.0)) # seconds
+
+# --- Logging Configuration ---
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+LOG_TO_FILE = os.environ.get('LOG_TO_FILE', 'True').lower() == 'true'
+LOG_FILE_PATH = os.environ.get('LOG_FILE_PATH', 'logs/trading_bot.log')
+LOG_FORMATTER_TYPE = os.environ.get('LOG_FORMATTER_TYPE', 'text').lower()
+
+try:
+    LOG_DIR = os.path.dirname(LOG_FILE_PATH)
+    if LOG_DIR and not os.path.exists(LOG_DIR): # Ensure LOG_DIR is not empty if LOG_FILE_PATH is just a filename
+        # Check if BASE_DIR is defined and LOG_FILE_PATH is relative
+        if 'BASE_DIR' in locals() and not os.path.isabs(LOG_FILE_PATH):
+            full_log_path = os.path.join(BASE_DIR, LOG_FILE_PATH)
+            LOG_DIR = os.path.dirname(full_log_path) # Re-evaluate LOG_DIR
+            if not os.path.exists(LOG_DIR):
+                 os.makedirs(LOG_DIR, exist_ok=True)
+            LOG_FILE_PATH = full_log_path # Use full path for RotatingFileHandler
+        elif not os.path.isabs(LOG_FILE_PATH): # Relative path but no BASE_DIR, try to make it in project root
+            # This assumes settings.py is in a subdirectory like 'core' from project root.
+            # Project root is BASE_DIR.parent for files in 'core/' or BASE_DIR if settings.py is in root.
+            # This part can be tricky depending on actual project structure vs. where BASE_DIR points.
+            # Safest is to make LOG_FILE_PATH absolute or ensure it's handled by run environment.
+            # For now, if LOG_DIR (from relative path) doesn't exist, create it.
+            if not os.path.exists(LOG_DIR) and LOG_DIR: # Ensure LOG_DIR is not empty
+                 os.makedirs(LOG_DIR, exist_ok=True)
+    else: # If LOG_FILE_PATH is just a filename (no directory part)
+        # Logs will be in the directory where Django is run (e.g. where manage.py is)
+        # Or if BASE_DIR is defined, could use os.path.join(BASE_DIR, LOG_FILE_PATH)
+        if 'BASE_DIR' in locals() and not os.path.isabs(LOG_FILE_PATH):
+            LOG_FILE_PATH = os.path.join(BASE_DIR, LOG_FILE_PATH)
+
+except Exception as e:
+    print(f"Error creating log directory for {LOG_FILE_PATH}: {e}")
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose_text': {
+            'format': '%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(name)s.%(funcName)s:%(lineno)d - %(message)s'
+        },
+        'simple_text': {
+            'format': '%(levelname)s %(asctime)s %(name)s - %(message)s'
+        },
+        'json': {
+            '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+            'format': '%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(name)s %(funcName)s %(lineno)d %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': LOG_LEVEL,
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple_text' if LOG_FORMATTER_TYPE == 'text' else 'json',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': os.getenv('DJANGO_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'trading_bot': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'trading_bot.run_command': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+         'trading_bot.ai_signal_generator': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+        'trading_bot.live_data.binance_feed': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': LOG_LEVEL,
+    }
+}
+
+if LOG_TO_FILE:
+    LOGGING['handlers']['file'] = {
+        'level': LOG_LEVEL,
+        'class': 'logging.handlers.RotatingFileHandler',
+        'filename': LOG_FILE_PATH,
+        'maxBytes': 1024 * 1024 * 10,
+        'backupCount': 5,
+        'formatter': 'verbose_text' if LOG_FORMATTER_TYPE == 'text' else 'json',
+    }
+    LOGGING['loggers']['trading_bot']['handlers'].append('file')
+    LOGGING['loggers']['trading_bot.run_command']['handlers'].append('file')
+    LOGGING['loggers']['trading_bot.ai_signal_generator']['handlers'].append('file')
+    LOGGING['loggers']['trading_bot.live_data.binance_feed']['handlers'].append('file')
+    # LOGGING['root']['handlers'].append('file')

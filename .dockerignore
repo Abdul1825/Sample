@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Django collected static files (if any, not used yet but good practice)
+staticfiles/
+mediafiles/
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.swp
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Log files and CSV outputs (these are runtime generated)
+logs/
+*.log
+*.csv
+
+# Docker specific (if storing compose locally and don't want it in image)
+# docker-compose.yml # Usually kept with Dockerfile
+# Dockerfile # Usually kept
+
+# Local instance data (e.g. SQLite if used, not in this project)
+*.sqlite3
+db.sqlite3
+
+# Secrets / Environment files (should be handled by runtime env vars or Docker secrets)
+.env # Do not include .env in the Docker image itself
+# .env.* # For different environments if used
+
+# Test reports
+htmlcov/
+.coverage
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.prof
+*.lprof

@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15 # Use a specific version
+    container_name: trading_bot_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      # These should match your .env file for local dev consistency
+      # Or, for more security, use a mechanism to inject secrets without hardcoding here.
+      # For local dev, reading from .env via 'env_file' is common.
+      POSTGRES_DB: \${DB_NAME:-tradingbotdb}       # Use .env value or default
+      POSTGRES_USER: \${DB_USER:-tradingbotuser}
+      POSTGRES_PASSWORD: \${DB_PASSWORD:-yoursecurepassword} # Strongly recommend changing this
+    ports:
+      - "5433:5432" # Expose DB on host port 5433 to avoid conflict with local 5432
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: trading_bot_app
+    # The command here will override the CMD in Dockerfile.
+    # Example: run for ETHUSDT with specific logging.
+    # User should customize this or run ad-hoc commands.
+    command: >
+      sh -c "python src/manage.py migrate --settings=core.settings &&
+             python src/manage.py run_trading_bot
+               --symbol=BTCUSDT
+               --settings=core.settings
+               --log_file=logs/trading_bot_docker.log
+               --price_history_len=60
+               --recent_trend_len=5
+               --sma_window=20
+               --rsi_window=14
+               --macd_long=26
+               --bb_window=20"
+    volumes:
+      - .:/app # Mount current directory to /app in container for development (live code changes)
+               # For production, you'd typically not mount the code like this after building.
+      - ./logs:/app/logs # Mount logs directory to persist logs outside container
+    ports:
+      # If Django app had HTTP interface, expose it here. e.g. "8000:8000"
+      # Not needed for a management command bot.
+      pass # No ports needed for a script-based bot unless it exposes an API
+    depends_on:
+      - db
+    env_file:
+      - .env # Load environment variables from .env file at project root
+    environment:
+      # Ensure Python output is not buffered, good for seeing logs immediately
+      PYTHONUNBUFFERED: 1
+      # Override DB_HOST to point to the 'db' service name in Docker Compose network
+      DB_HOST: db
+      DB_PORT: 5432 # PostgreSQL inside Docker network will be on 5432
+      # Other env vars can be set here or will be taken from .env
+    restart: unless-stopped
+
+volumes:
+  postgres_data: # Named volume for persisting PostgreSQL data
+    driver: local
+
+networks:
+  default:
+    name: trading_bot_network # Optional: define a custom network

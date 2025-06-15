@@ -6,3 +6,5 @@ python-binance
 python-telegram-bot
 python-dotenv
 httpx
+
+python-json-logger
