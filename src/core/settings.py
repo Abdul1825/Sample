@@ -140,3 +140,6 @@ OPENROUTER_MODEL_NAME = os.environ.get('OPENROUTER_MODEL_NAME', 'mistralai/mistr
 # --- Optional Additional AI Models for Consensus ---
 OPENROUTER_MODEL_NAME_2 = os.environ.get('OPENROUTER_MODEL_NAME_2', None)
 OPENROUTER_MODEL_NAME_3 = os.environ.get('OPENROUTER_MODEL_NAME_3', None)
+
+# --- AI Follow-up Settings ---
+AI_FOLLOW_UP_CONFIDENCE_THRESHOLD = os.environ.get('AI_FOLLOW_UP_CONFIDENCE_THRESHOLD', '0.65')

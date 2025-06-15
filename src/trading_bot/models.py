@@ -27,6 +27,13 @@ class Signal(models.Model):
     consensus_models_queried = models.IntegerField(null=True, blank=True)
     consensus_models_agreed = models.IntegerField(null=True, blank=True)
     raw_ai_responses = models.JSONField(null=True, blank=True) # Stores list of dicts from each AI model
+    ai_key_indicators_note = models.TextField(null=True, blank=True) # Note from AI on influential indicators
+
+    # Post-signal price tracking fields
+    price_at_plus_5m = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    price_at_plus_15m = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    price_at_plus_30m = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
+    price_at_plus_1hr = models.DecimalField(max_digits=20, decimal_places=8, null=True, blank=True)
 
     def __str__(self):
         return f"{self.timestamp.strftime('%Y-%m-%d %H:%M:%S')} - {self.symbol} - {self.signal_type} @ {self.price:.4f} (AI: {self.ai_model or 'N/A'})"

@@ -19,20 +19,20 @@ class AISignalGenerator:
             self.model_names_to_query.append(self.secondary_model_name.strip())
         if self.tertiary_model_name and self.tertiary_model_name.strip():
             self.model_names_to_query.append(self.tertiary_model_name.strip())
-        # Remove duplicates if any model is specified multiple times
         self.model_names_to_query = sorted(list(set(self.model_names_to_query)))
 
 
         if not self.api_key:
             print("WARNING: AISignalGenerator - OPENROUTER_API_KEY not found.")
 
-        self.client = httpx.AsyncClient(timeout=45.0) # Increased timeout for potentially multiple calls
-        print(f"AISignalGenerator initialized. Primary model: {self.primary_model_name}. All models to query: {self.model_names_to_query}")
+        self.client = httpx.AsyncClient(timeout=60.0)
+        self.follow_up_confidence_threshold = Decimal(str(getattr(settings, 'AI_FOLLOW_UP_CONFIDENCE_THRESHOLD', 0.65)))
+        print(f"AISignalGenerator initialized. Primary: {self.primary_model_name}. All: {self.model_names_to_query}. Follow-up threshold: {self.follow_up_confidence_threshold}")
 
     async def close_client(self):
         await self.client.aclose()
 
-    def _construct_prompt(self, processed_data):
+    def _construct_initial_prompt(self, processed_data):
         symbol = processed_data.get('symbol', 'N/A')
         last_price = processed_data.get('last_price', 'N/A')
         sma = processed_data.get('sma', 'N/A')
@@ -43,96 +43,93 @@ class AISignalGenerator:
         bb_middle = processed_data.get('bb_middle', 'N/A')
         bb_upper = processed_data.get('bb_upper', 'N/A')
         bb_lower = processed_data.get('bb_lower', 'N/A')
-        recent_prices_list = processed_data.get('recent_price_trend', []) # Expect a list of price strings
-        recent_prices_str = ", ".join(recent_prices_list) if recent_prices_list else "N/A"
+        recent_prices_list = processed_data.get('recent_price_trend', [])
+        recent_prices_str = ", ".join(map(str, recent_prices_list)) if recent_prices_list else "N/A"
 
+        # Define risk profile (fixed for now, could be configurable later)
+        risk_profile_statement = "When formulating your response, including suggested stop-loss and take-profit levels, please assume a 'moderate' risk tolerance."
 
         prompt = (
-            f"You are an expert trading analysis AI. Based on the following real-time market data for {symbol}, "
-            f"provide a trading decision (BUY, SELL, or HOLD). Explain your reasoning. "
+            f"You are an expert trading analysis AI. {risk_profile_statement} " # Added risk profile statement
+            f"Based on the following real-time market data for {symbol}, "
+            f"provide a trading decision (BUY, SELL, or HOLD). Explain your reasoning in detail. "
             f"Also, provide a confidence score (0.0 to 1.0) for your decision, and if BUY or SELL, "
-            f"suggest a stop-loss price and a take-profit price.\n\n"
+            f"suggest a stop-loss price and a take-profit price. "
+            f"Finally, please identify the 1-2 technical indicators that most heavily influenced your decision and summarize this in a brief note.\n\n"
             f"Market Data for {symbol}:\n"
             f"- Current Price: {last_price}\n"
-            f"- Recent Price Trend (last {len(recent_prices_list)} prices, latest first if applicable, or just recent sequence): [{recent_prices_str}]\n" # Added trend
+            f"- Recent Price Trend (last {len(recent_prices_list)} prices): [{recent_prices_str}]\n"
             f"- 20-period SMA: {sma}\n"
             f"- 14-period RSI: {rsi}\n"
             f"- MACD (12,26,9): Line={macd_line}, Signal={macd_signal}, Histogram={macd_histogram}\n"
             f"- Bollinger Bands (20,2): Middle={bb_middle}, Upper={bb_upper}, Lower={bb_lower}\n\n"
-            f"Your analysis should consider all these indicators and the recent price trend.\n\n"
+            f"Your analysis should consider all these indicators and the recent price trend, keeping the moderate risk tolerance in mind.\n\n"
             f"Respond *only* with a valid JSON object formatted exactly as follows:\n"
             f'{{"decision": "BUY|SELL|HOLD", "reason": "Your detailed reasoning here.", "confidence_score": <float_0_to_1>, '
-            f'"suggested_stop_loss": <float_price_or_null>, "suggested_take_profit": <float_price_or_null>}}\n'
-            f"Ensure numbers are actual numbers and use null for SL/TP if not applicable."
+            f'"suggested_stop_loss": <float_price_or_null>, "suggested_take_profit": <float_price_or_null>, '
+            f'"key_indicators_note": "Brief note on 1-2 main influential indicators."}}\n'
+            f"Ensure numbers are actual numbers and use null for SL/TP if not applicable. The key_indicators_note should be a string."
         )
         return prompt
 
-    async def _query_single_model(self, prompt, model_name_to_query):
+    def _construct_follow_up_prompt(self, previous_decision, previous_reason, previous_confidence):
+        return (
+            f"Your previous decision was {previous_decision} with a confidence of {previous_confidence:.2f}. "
+            f"The stated reason was: '{previous_reason}'. "
+            f"This confidence is somewhat low. Can you elaborate further on the key factors supporting your decision, "
+            f"and also explicitly mention the main counter-arguments or risks you see with this current assessment? "
+            f"If your further analysis changes your decision, confidence, SL, or TP, please provide the updated values. "
+            f"Respond *only* with a valid JSON object in the same format as before."
+        )
+
+    async def _query_single_model(self, messages: list, model_name_to_query: str):
         if not self.api_key: return {"error": "API key not set"}
         try:
             response = await self.client.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={"model": model_name_to_query, "messages": [{"role": "user", "content": prompt}]}
+                json={"model": model_name_to_query, "messages": messages}
             )
             response.raise_for_status()
             return response.json()
-        except httpx.TimeoutException:
-            return {"error": f"Timeout querying {model_name_to_query}"}
-        except httpx.NetworkError as e:
-            return {"error": f"Network error querying {model_name_to_query}: {e}"}
+        except httpx.TimeoutException: return {"error": f"Timeout querying {model_name_to_query}"}
+        except httpx.NetworkError as e: return {"error": f"Network error: {e}"}
         except httpx.HTTPStatusError as e:
-            error_body_text = e.response.text[:200] # Limit error body length
-            return {"error": f"HTTP {e.response.status_code} querying {model_name_to_query}. Details: {error_body_text}"}
-        except Exception as e:
-            return {"error": f"Unexpected error querying {model_name_to_query}: {str(e)[:200]}"}
+            error_body_text = e.response.text[:200]
+            return {"error": f"HTTP {e.response.status_code} from {model_name_to_query}. Details: {error_body_text}"}
+        except Exception as e: return {"error": f"Unexpected error querying {model_name_to_query}: {str(e)[:200]}"}
 
-    def _parse_ai_response(self, ai_response_json, symbol, last_price_str, processed_data_for_signal, model_name_queried):
-        # This function now parses a single model's response and includes the model name.
-        # The merging of processed_data will happen in generate_signal after all responses are gathered.
-        try:
-            if ai_response_json.get("error"): # Check if it's an error dict from _query_single_model
-                print(f"AISignalGenerator: Error from model {model_name_queried}: {ai_response_json['error']}")
-                return {"model_name": model_name_queried, "decision": "ERROR", "reason": ai_response_json['error']}
 
-            content_str = ai_response_json['choices'][0]['message']['content']
-            if content_str.startswith("```json"): content_str = content_str[7:]
-            if content_str.startswith("```"): content_str = content_str[3:]
-            if content_str.endswith("```"): content_str = content_str[:-3]
-            content_str = content_str.strip()
+    def _parse_ai_response_content(self, response_content_str: str):
+        if response_content_str.startswith("```json"): response_content_str = response_content_str[7:]
+        if response_content_str.startswith("```"): response_content_str = response_content_str[3:]
+        if response_content_str.endswith("```"): response_content_str = response_content_str[:-3]
+        response_content_str = response_content_str.strip()
+        return json.loads(response_content_str)
 
-            signal_json_from_ai = json.loads(content_str)
+    def _extract_signal_from_parsed_json(self, signal_json, model_name, last_price_str_for_signal):
+        decision = signal_json.get('decision', 'HOLD').upper()
+        reason = signal_json.get('reason', 'N/A')
+        confidence = signal_json.get('confidence_score', 0.5)
+        stop_loss = signal_json.get('suggested_stop_loss')
+        take_profit = signal_json.get('suggested_take_profit')
+        key_indicators_note = signal_json.get('key_indicators_note', None) # New field
 
-            decision = signal_json_from_ai.get('decision', 'HOLD').upper()
-            reason = signal_json_from_ai.get('reason', 'N/A')
-            confidence = signal_json_from_ai.get('confidence_score', 0.5)
-            stop_loss = signal_json_from_ai.get('suggested_stop_loss')
-            take_profit = signal_json_from_ai.get('suggested_take_profit')
+        try: confidence = float(confidence)
+        except: confidence = 0.5
 
-            try: confidence = float(confidence)
-            except: confidence = 0.5
+        def parse_price(val): # Keep this helper local or move to class/static if used elsewhere
+            if val is None: return None
+            try: return Decimal(str(val))
+            except: return None # Failed conversion returns None
 
-            def parse_price(val):
-                if val is None: return None
-                try: return Decimal(str(val))
-                except: return None
-
-            parsed_signal = {
-                "model_name": model_name_queried,
-                "decision": decision,
-                "reason": reason,
-                "confidence": confidence,
-                "suggested_stop_loss": parse_price(stop_loss),
-                "suggested_take_profit": parse_price(take_profit),
-                "price_at_signal_generation": parse_price(last_price_str) # Price when AI was queried
-            }
-            return parsed_signal
-
-        except Exception as e:
-            error_info = str(ai_response_json)[:200] # Get first 200 chars of response if parsing fails
-            print(f"AISignalGenerator: Error parsing response from {model_name_queried}: {e}. Response: {error_info}...")
-            return {"model_name": model_name_queried, "decision": "ERROR", "reason": f"Parsing error: {e}"}
-
+        return {
+            "model_name": model_name, "decision": decision, "reason": reason,
+            "confidence": confidence, "suggested_stop_loss": parse_price(stop_loss),
+            "suggested_take_profit": parse_price(take_profit),
+            "price_at_signal_generation": parse_price(last_price_str_for_signal),
+            "key_indicators_note": key_indicators_note # Add new field to output
+        }
 
     async def generate_signal(self, processed_data):
         if not self.api_key: print("AISignalGenerator: API key not set."); return None
@@ -141,65 +138,110 @@ class AISignalGenerator:
 
         symbol = processed_data.get('symbol')
         last_price_str = processed_data.get('last_price')
-        prompt = self._construct_prompt(processed_data)
+        initial_prompt_content = self._construct_initial_prompt(processed_data)
 
-        # Query all configured models concurrently
-        tasks = [self._query_single_model(prompt, model_name) for model_name in self.model_names_to_query]
-        all_responses_json = await asyncio.gather(*tasks)
+        all_models_conversation_history = {}
+
+        tasks = []
+        for model_name in self.model_names_to_query:
+            messages = [{"role": "user", "content": initial_prompt_content}]
+            all_models_conversation_history[model_name] = list(messages)
+            tasks.append(self._query_single_model(messages, model_name))
+
+        initial_responses_json = await asyncio.gather(*tasks)
 
         parsed_signals_from_models = []
-        for i, resp_json in enumerate(all_responses_json):
+        primary_model_first_response_parsed = None
+
+        for i, resp_json in enumerate(initial_responses_json):
             model_name = self.model_names_to_query[i]
-            parsed = self._parse_ai_response(resp_json, symbol, last_price_str, processed_data, model_name)
-            parsed_signals_from_models.append(parsed)
+            current_parsed_signal = {"model_name": model_name, "decision": "ERROR", "reason": "Initial query failed or no content"}
 
-        # Basic Consensus Logic (Primary model's decision is leading)
-        primary_signal_parsed = None
-        for p_signal in parsed_signals_from_models:
-            if p_signal["model_name"] == self.primary_model_name:
-                primary_signal_parsed = p_signal
-                break
+            if resp_json and not resp_json.get("error"):
+                try:
+                    ai_content_str = resp_json['choices'][0]['message']['content']
+                    all_models_conversation_history[model_name].append({"role": "assistant", "content": ai_content_str})
+                    parsed_content_json = self._parse_ai_response_content(ai_content_str)
+                    current_parsed_signal = self._extract_signal_from_parsed_json(parsed_content_json, model_name, last_price_str)
+                except Exception as e:
+                    current_parsed_signal["reason"] = f"Error parsing initial response: {e}. Response: {str(resp_json)[:200]}"
+                    print(current_parsed_signal["reason"])
+            elif resp_json and resp_json.get("error"):
+                 current_parsed_signal["reason"] = resp_json.get("error")
+                 print(f"AISignalGenerator: API Error from {model_name} (initial): {current_parsed_signal['reason']}")
 
-        if not primary_signal_parsed or primary_signal_parsed["decision"] == "ERROR":
-            print(f"AISignalGenerator: Primary model {self.primary_model_name} failed or returned error.")
-            return None # Or handle fallback if desired
+            parsed_signals_from_models.append(current_parsed_signal)
+            if model_name == self.primary_model_name:
+                primary_model_first_response_parsed = current_parsed_signal
 
-        if primary_signal_parsed["decision"] == "HOLD":
-            print(f"AISignalGenerator: Primary model ({self.primary_model_name}) recommends HOLD for {symbol}.")
-            return None # No actionable signal for HOLD
+        if primary_model_first_response_parsed and \
+           primary_model_first_response_parsed["decision"] not in ["ERROR", "HOLD"] and \
+           Decimal(str(primary_model_first_response_parsed.get("confidence", 0.0))) < self.follow_up_confidence_threshold:
 
-        # Consensus details
-        agreed_decisions = [s["decision"] for s in parsed_signals_from_models if s["decision"] == primary_signal_parsed["decision"]]
+            print(f"AISignalGenerator: Primary model confidence {primary_model_first_response_parsed['confidence']:.2f} is below threshold {self.follow_up_confidence_threshold}. Asking follow-up.")
+            follow_up_prompt_content = self._construct_follow_up_prompt(
+                primary_model_first_response_parsed["decision"],
+                primary_model_first_response_parsed["reason"],
+                primary_model_first_response_parsed["confidence"]
+            )
+            all_models_conversation_history[self.primary_model_name].append({"role": "user", "content": follow_up_prompt_content})
+
+            follow_up_response_json = await self._query_single_model(all_models_conversation_history[self.primary_model_name], self.primary_model_name)
+
+            if follow_up_response_json and not follow_up_response_json.get("error"):
+                try:
+                    ai_content_str_follow_up = follow_up_response_json['choices'][0]['message']['content']
+                    all_models_conversation_history[self.primary_model_name].append({"role": "assistant", "content": ai_content_str_follow_up})
+                    parsed_content_json_follow_up = self._parse_ai_response_content(ai_content_str_follow_up)
+                    primary_model_first_response_parsed = self._extract_signal_from_parsed_json(parsed_content_json_follow_up, self.primary_model_name, last_price_str)
+                    primary_model_first_response_parsed["reason"] = f"[Follow-up Result] {primary_model_first_response_parsed['reason']}"
+                    for idx, sig in enumerate(parsed_signals_from_models):
+                        if sig["model_name"] == self.primary_model_name:
+                            parsed_signals_from_models[idx] = primary_model_first_response_parsed
+                            break
+                except Exception as e:
+                    print(f"AISignalGenerator: Error parsing follow-up for primary model: {e}. Response: {str(follow_up_response_json)[:200]}")
+            elif follow_up_response_json and follow_up_response_json.get("error"):
+                print(f"AISignalGenerator: API Error from {self.primary_model_name} (follow-up): {follow_up_response_json.get('error')}")
+
+        if not primary_model_first_response_parsed or primary_model_first_response_parsed["decision"] == "ERROR":
+            print(f"AISignalGenerator: Primary model {self.primary_model_name} failed or ended with error after potential follow-up.")
+            return None
+        if primary_model_first_response_parsed["decision"] == "HOLD":
+            print(f"AISignalGenerator: Primary model ({self.primary_model_name}) recommends HOLD for {symbol} after potential follow-up.")
+            return None
+
+        agreed_decisions = [s["decision"] for s in parsed_signals_from_models if s["decision"] == primary_model_first_response_parsed["decision"]]
         consensus_count = len(agreed_decisions)
         total_queried = len(self.model_names_to_query)
 
-        # Construct final signal dictionary
-        final_signal_dict = {k: v for k, v in processed_data.items()} # Start with all indicators
-
-        # Convert numeric strings in final_signal_dict to Decimals where appropriate
-        for key_to_convert in ['sma', 'rsi', 'macd_line', 'macd_signal', 'macd_histogram', 'bb_middle', 'bb_upper', 'bb_lower', 'last_price']:
+        final_signal_dict = {k: v for k, v in processed_data.items()}
+        for key_to_convert in ['sma', 'rsi', 'macd_line', 'macd_signal', 'macd_histogram', 'bb_middle', 'bb_upper', 'bb_lower', 'last_price'] + ['recent_price_trend']:
             if key_to_convert in final_signal_dict:
-                try: final_signal_dict[key_to_convert] = Decimal(str(final_signal_dict[key_to_convert]))
-                except (InvalidOperation, TypeError, ValueError): pass
+                if key_to_convert == 'recent_price_trend' and isinstance(final_signal_dict[key_to_convert], list):
+                    try: final_signal_dict[key_to_convert] = [Decimal(str(p)) for p in final_signal_dict[key_to_convert]]
+                    except: pass
+                else:
+                    try: final_signal_dict[key_to_convert] = Decimal(str(final_signal_dict[key_to_convert]))
+                    except: pass
 
         final_signal_dict.update({
-            'symbol': symbol,
-            'signal_type': primary_signal_parsed["decision"],
-            'price': primary_signal_parsed["price_at_signal_generation"], # Price from primary model context
-            'confidence': primary_signal_parsed["confidence"], # From primary model
-            'reason': primary_signal_parsed["reason"], # From primary model
-            'ai_model': self.primary_model_name, # Primary model is the source of the main signal
-            'suggested_stop_loss': primary_signal_parsed["suggested_stop_loss"],
-            'suggested_take_profit': primary_signal_parsed["suggested_take_profit"],
-            'consensus_models_queried': total_queried,
-            'consensus_models_agreed': consensus_count,
-            'all_ai_responses': parsed_signals_from_models # Store all raw parsed responses for logging/DB
+            'symbol': symbol, 'signal_type': primary_model_first_response_parsed["decision"],
+            'price': primary_model_first_response_parsed["price_at_signal_generation"],
+            'confidence': primary_model_first_response_parsed["confidence"],
+            'reason': primary_model_first_response_parsed["reason"],
+            'ai_model': self.primary_model_name,
+            'suggested_stop_loss': primary_model_first_response_parsed["suggested_stop_loss"],
+            'suggested_take_profit': primary_model_first_response_parsed["suggested_take_profit"],
+            'key_indicators_note': primary_model_first_response_parsed.get('key_indicators_note'), # Add this from primary model
+            'consensus_models_queried': total_queried, 'consensus_models_agreed': consensus_count,
+            'all_ai_responses': all_models_conversation_history
         })
 
-        print(f"AISignalGenerator: Final signal for {symbol}: {primary_signal_parsed['decision']} (Confidence: {primary_signal_parsed['confidence']:.2f}). Consensus: {consensus_count}/{total_queried}.")
+        print(f"AISignalGenerator: Final signal for {symbol}: {final_signal_dict['signal_type']} (Conf: {final_signal_dict['confidence']:.2f}). Consensus: {consensus_count}/{total_queried}.")
         return final_signal_dict
 
-    def process_market_data_for_ai(self, market_data): # Remains largely the same
+    def process_market_data_for_ai(self, market_data):
         if market_data and market_data.get('s') and market_data.get('c'):
             return {
                 'symbol': market_data.get('s'), 'last_price': market_data.get('c'),

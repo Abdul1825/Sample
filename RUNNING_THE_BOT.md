@@ -91,6 +91,7 @@ This guide provides step-by-step instructions to set up and run the AI Trading S
     # Optional secondary/tertiary models for consensus (leave blank or comment out if not used)
     OPENROUTER_MODEL_NAME_2=''
     OPENROUTER_MODEL_NAME_3=''
+    AI_FOLLOW_UP_CONFIDENCE_THRESHOLD='0.65' # (0.0 to 1.0) Threshold for AI follow-up query
     \`\`\`
 
 6.  **Database Migrations**:
